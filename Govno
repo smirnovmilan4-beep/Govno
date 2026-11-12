@@ -32,18 +32,39 @@ local waiting       = false
 local killTimestamp = 0
 local gui, main, toggle, findBtn, actionLabel
 
--- СТАВИМ АВТОЗАПУСК ПО ССЫЛКЕ
-if SCRIPT_URL ~= "https://pastebin.com/raw/ТВОЯ_ССЫЛКА" then
-    local payload = 'loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()'
+-- ============ АВТОЗАПУСК ============
+local function setupAutoRejoin()
+    if not SCRIPT_URL or SCRIPT_URL == "" then
+        warn("[VampHunt] SCRIPT_URL пустой!")
+        return
+    end
+    
+    -- Защита от двойного запуска
+    local payload = string.format([[
+        if not _G.__VAMPHUNT_RUNNING then
+            _G.__VAMPHUNT_RUNNING = true
+            loadstring(game:HttpGet("%s"))()
+        end
+    ]], SCRIPT_URL)
+
     local q = queue_on_teleport 
         or (syn and syn.queue_on_teleport) 
         or (fluxus and fluxus.queue_on_teleport) 
         or (krnl and krnl.queue_on_teleport)
+        or (wave and wave.queue_on_teleport)
+        
     if q then
-        pcall(q, payload)
-        print("[VampHunt] Автозапуск по ссылке установлен.")
+        local ok, err = pcall(q, payload)
+        if ok then
+            print("[VampHunt] ✅ Автозапуск после реджоина установлен.")
+        else
+            warn("[VampHunt] ❌ Ошибка: " .. tostring(err))
+        end
+    else
+        warn("[VampHunt] ❌ Твой executor не поддерживает queue_on_teleport.")
     end
 end
+setupAutoRejoin()
 
 -- ============ UI ============
 local function createUI()
