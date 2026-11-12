@@ -3,7 +3,7 @@ local RunService = game:GetService("RunService")
 local VIM = game:GetService("VirtualInputManager")
 local LP = Players.LocalPlayer
 
-local SCRIPT_URL = "https://pastebin.com/raw/XK19k8pe"
+local SCRIPT_URL = "https://raw.githubusercontent.com/smirnovmilan4-beep/Govno/main/Govno"
 
 local HEIGHT_OFFSET  = 7.5
 local TELEPORT_RATE  = 20
