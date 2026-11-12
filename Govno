@@ -1,0 +1,426 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local VIM = game:GetService("VirtualInputManager")
+local LP = Players.LocalPlayer
+
+local SCRIPT_URL = "https://pastebin.com/raw/XK19k8pe"
+
+local HEIGHT_OFFSET  = 7.5
+local TELEPORT_RATE  = 20
+local CHECK_INTERVAL = 1
+local SPAWN_DELAY    = 0.5
+local KEYS           = {"dio", "dio brando", "diavolo", "jotaro"}
+local SMOOTH         = 0.25
+local M1_COOLDOWN    = 0.12
+local E_COOLDOWN     = 0.45
+local T_COOLDOWN     = 0.45
+local POST_KILL_WAIT = 1.0
+local MENU_WAIT_TIME = 7.3
+local CAM_DISTANCE   = 14
+local CAM_HEIGHT     = 4
+local CAM_LOOK_UP    = 0
+local CAM_RIGHT_OFFSET = 4
+local CLICK_X_PERCENT = 0.20
+local CLICK_Y_PERCENT = 0.88
+
+local enabled = true
+local currentTarget, trackConn, camConn, attackToken
+local savedPlatformStand, savedWalkSpeed
+local teleportAccum = 0
+local smoothedPos   = nil
+local waiting       = false
+local killTimestamp = 0
+local gui, main, toggle, findBtn, actionLabel
+
+-- СТАВИМ АВТОЗАПУСК ПО ССЫЛКЕ
+if SCRIPT_URL ~= "https://pastebin.com/raw/ТВОЯ_ССЫЛКА" then
+    local payload = 'loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()'
+    local q = queue_on_teleport 
+        or (syn and syn.queue_on_teleport) 
+        or (fluxus and fluxus.queue_on_teleport) 
+        or (krnl and krnl.queue_on_teleport)
+    if q then
+        pcall(q, payload)
+        print("[VampHunt] Автозапуск по ссылке установлен.")
+    end
+end
+
+-- ============ UI ============
+local function createUI()
+    local guiParent
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    guiParent = (ok and cg) or LP:WaitForChild("PlayerGui")
+    if guiParent:FindFirstChild("VampHuntGUI") then return end
+
+    gui = Instance.new("ScreenGui")
+    gui.Name = "VampHuntGUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+    gui.Parent = guiParent
+
+    main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 200, 0, 150)
+    main.Position = UDim2.new(1, -220, 0.5, -100)
+    main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Parent = gui
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+    local function mkBtn(text, y, color)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -16, 0, 26)
+        b.Position = UDim2.new(0, 8, 0, y)
+        b.BackgroundColor3 = color
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(255, 255, 255)
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 12
+        b.Parent = main
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+        return b
+    end
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -16, 0, 20)
+    title.Position = UDim2.new(0, 8, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Text = "Vampire Hunter"
+    title.TextColor3 = Color3.fromRGB(220, 180, 255)
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Active = true
+    title.Parent = main
+
+    toggle  = mkBtn("ВЫКЛЮЧИТЬ", 26, Color3.fromRGB(180, 40, 60))
+    findBtn = mkBtn("Тест: Клик вниз", 56, Color3.fromRGB(90, 60, 140))
+
+    actionLabel = Instance.new("TextLabel")
+    actionLabel.Size = UDim2.new(1, -16, 0, 24)
+    actionLabel.Position = UDim2.new(0, 8, 0, 88)
+    actionLabel.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+    actionLabel.BorderSizePixel = 0
+    actionLabel.Text = "Поиск..."
+    actionLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+    actionLabel.Font = Enum.Font.GothamMedium
+    actionLabel.TextSize = 11
+    actionLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    actionLabel.TextXAlignment = Enum.TextXAlignment.Left
+    actionLabel.Parent = main
+    Instance.new("UICorner", actionLabel).CornerRadius = UDim.new(0, 4)
+    local p2 = Instance.new("UIPadding", actionLabel)
+    p2.PaddingLeft = UDim.new(0, 6)
+
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            local startPos, startInput = main.Position, input.Position
+            local conn
+            conn = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.Change then
+                    local d = input.Position - startInput
+                    main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                              startPos.Y.Scale, startPos.Y.Offset + d.Y)
+                elseif input.UserInputState == Enum.UserInputState.End then
+                    conn:Disconnect()
+                end
+            end)
+        end
+    end)
+
+    toggle.MouseButton1Click:Connect(function()
+        enabled = not enabled
+        if enabled then
+            toggle.Text = "ВЫКЛЮЧИТЬ"
+            toggle.BackgroundColor3 = Color3.fromRGB(180, 40, 60)
+            actionLabel.Text = "Поиск..."
+            actionLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+        else
+            toggle.Text = "ВКЛЮЧИТЬ"
+            toggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+            actionLabel.Text = "Выкл."
+            actionLabel.TextColor3 = Color3.fromRGB(180, 180, 190)
+            if stopTracking then stopTracking() end
+        end
+    end)
+
+    findBtn.MouseButton1Click:Connect(function()
+        actionLabel.Text = "Жесткий клик..."
+        actionLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+        if forceClickReplay then forceClickReplay() end
+        actionLabel.Text = "Клик сделан"
+        actionLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+    end)
+end
+
+-- ============ Поиск Dio ============
+local function nameMatches(n)
+    n = n:lower()
+    for _, k in ipairs(KEYS) do
+        if n:find(k, 1, true) then return true end
+    end
+end
+local function isAlive(inst)
+    if not inst or not inst.Parent or not inst:IsDescendantOf(workspace) then return false end
+    local h = inst:FindFirstChildOfClass("Humanoid")
+    return not (h and h.Health <= 0)
+end
+local function getPos(inst)
+    local hrp = inst:FindFirstChild("HumanoidRootPart")
+    if hrp then return hrp.Position end
+    if inst.PrimaryPart then return inst.PrimaryPart.Position end
+    local ok, cf = pcall(function() return inst:GetPivot() end)
+    if ok then return cf.Position end
+    local p = inst:FindFirstChildWhichIsA("BasePart", true)
+    return p and p.Position or nil
+end
+local function findNearest()
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = hrp and hrp.Position or Vector3.zero
+    local best, bd = nil, math.huge
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m:FindFirstChildOfClass("Humanoid")
+            and m ~= LP.Character and nameMatches(m.Name) and isAlive(m) then
+            local p = getPos(m)
+            if p then
+                local d = (p - myPos).Magnitude
+                if d < bd then best, bd = {obj = m, name = m.Name}, d end
+            end
+        end
+    end
+    return best
+end
+
+-- ============ M1 / E / T ============
+local function pressM1()
+    local cam = workspace.CurrentCamera
+    local vp = cam.ViewportSize
+    local cx, cy = vp.X * 0.5, vp.Y * 0.5
+    pcall(function()
+        VIM:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        task.wait(0.02)
+        VIM:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+    end)
+end
+local function pressKey(k)
+    pcall(function()
+        VIM:SendKeyEvent(true, k, false, game)
+        task.wait(0.03)
+        VIM:SendKeyEvent(false, k, false, game)
+    end)
+end
+local function startAutoAttack(token)
+    task.spawn(function()
+        local lm, le, lt = 0, 0, 0
+        while enabled and token == attackToken and currentTarget do
+            if not isAlive(currentTarget.obj) then break end
+            local now = os.clock()
+            if now - lm >= M1_COOLDOWN then pressM1(); lm = now end
+            if now - le >= E_COOLDOWN  then pressKey(Enum.KeyCode.E); le = now end
+            if now - lt >= T_COOLDOWN  then pressKey(Enum.KeyCode.T); lt = now end
+            task.wait(0.03)
+        end
+    end)
+end
+
+-- ============ Freeze ============
+local function freezeChar()
+    local char = LP.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    savedPlatformStand = hum.PlatformStand
+    savedWalkSpeed     = hum.WalkSpeed
+    hum.PlatformStand = true; hum.AutoRotate = false; hum.WalkSpeed = 0
+    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+end
+local function unfreezeChar()
+    local char = LP.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum.PlatformStand = savedPlatformStand or false
+    hum.AutoRotate = true
+    hum.WalkSpeed = savedWalkSpeed or 16
+    savedPlatformStand, savedWalkSpeed = nil, nil
+end
+
+function stopTracking()
+    if trackConn then trackConn:Disconnect() end
+    if camConn   then camConn:Disconnect()   end
+    trackConn, camConn = nil, nil
+    currentTarget, smoothedPos, attackToken = nil, nil, nil
+    waiting = false
+    unfreezeChar()
+end
+
+local function startTracking(t)
+    stopTracking()
+    currentTarget, teleportAccum, smoothedPos = t, 0, nil
+    attackToken = {}
+    freezeChar()
+    if actionLabel then
+        actionLabel.Text = "Атака: " .. t.name
+        actionLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+    end
+
+    trackConn = RunService.Heartbeat:Connect(function(dt)
+        if not enabled then return end
+        if not isAlive(t.obj) then
+            killTimestamp = os.clock()
+            stopTracking()
+            return
+        end
+        teleportAccum += dt
+        if teleportAccum < 1 / TELEPORT_RATE then return end
+        teleportAccum = 0
+        local raw = getPos(t.obj)
+        if not raw then return end
+        smoothedPos = smoothedPos and smoothedPos:Lerp(raw, SMOOTH) or raw
+        local char = LP.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        char:PivotTo(CFrame.lookAt(smoothedPos + Vector3.new(0, HEIGHT_OFFSET, 0), raw))
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    camConn = RunService.RenderStepped:Connect(function()
+        if not enabled or not currentTarget or not isAlive(currentTarget.obj) then return end
+        local targetPos = getPos(currentTarget.obj)
+        if not targetPos then return end
+        local char = LP.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local myPos = hrp.Position
+        local dir = (myPos - targetPos) * Vector3.new(1, 0, 1)
+        if dir.Magnitude < 0.1 then dir = Vector3.new(0, 0, 1) end
+        dir = dir.Unit
+        local rightDir = dir:Cross(Vector3.new(0, 1, 0))
+        local camPos = myPos + dir * CAM_DISTANCE + Vector3.new(0, CAM_HEIGHT, 0) + rightDir * CAM_RIGHT_OFFSET
+        local lookAt = targetPos + Vector3.new(0, CAM_LOOK_UP, 0) - rightDir * CAM_RIGHT_OFFSET
+        workspace.CurrentCamera.CFrame = CFrame.lookAt(camPos, lookAt)
+    end)
+
+    startAutoAttack(attackToken)
+end
+
+-- ============ ЖЕСТКИЙ КЛИК ============
+function forceClickReplay()
+    local vp = workspace.CurrentCamera.ViewportSize
+    local w, h = vp.X, vp.Y
+    local targetX = w * CLICK_X_PERCENT
+    local targetY = h * CLICK_Y_PERCENT
+
+    local pg = LP:FindFirstChild("PlayerGui")
+    if pg then
+        local btn = pg:FindFirstChild("ReplayButton", true)
+            or pg:FindFirstChild("RetryButton", true)
+        if btn then
+            pcall(function() btn:Activate() end)
+            pcall(function() btn.MouseButton1Click:Fire() end)
+        end
+    end
+
+    for i = 1, 2 do
+        pcall(function()
+            VIM:SendMouseMoveEvent(targetX, targetY, game)
+            task.wait(0.15)
+            VIM:SendMouseButtonEvent(targetX, targetY, 0, true, game, 1)
+            task.wait(0.1)
+            VIM:SendMouseButtonEvent(targetX, targetY, 0, false, game, 1)
+        end)
+        task.wait(0.2)
+    end
+    return true
+end
+
+createUI()
+
+-- ============ СТРАЖ ============
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        local guiParent
+        local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+        guiParent = (ok and cg) or LP:FindFirstChild("PlayerGui")
+        if guiParent and not guiParent:FindFirstChild("VampHuntGUI") then
+            createUI()
+            if enabled and actionLabel then
+                actionLabel.Text = "Возобновление..."
+                actionLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+            end
+        end
+    end
+end)
+
+-- ============ Основной цикл ============
+task.spawn(function()
+    while true do
+        task.wait(CHECK_INTERVAL)
+        if not enabled then continue end
+        if currentTarget and isAlive(currentTarget.obj) then continue end
+
+        if killTimestamp > 0 then
+            local since = os.clock() - killTimestamp
+            if since < POST_KILL_WAIT then
+                if actionLabel then
+                    actionLabel.Text = string.format("Ожидание %.1fс...", POST_KILL_WAIT - since)
+                    actionLabel.TextColor3 = Color3.fromRGB(255, 180, 60)
+                end
+                continue
+            end
+            local newT = findNearest()
+            if not newT then
+                killTimestamp = 0
+                enabled = false
+                stopTracking()
+                if actionLabel then
+                    actionLabel.Text = string.format("Ждём меню %.1f сек...", MENU_WAIT_TIME)
+                    actionLabel.TextColor3 = Color3.fromRGB(255, 120, 60)
+                end
+                task.wait(MENU_WAIT_TIME)
+                if actionLabel then
+                    actionLabel.Text = "Жесткий клик вниз..."
+                    actionLabel.TextColor3 = Color3.fromRGB(255, 120, 60)
+                end
+                forceClickReplay()
+                task.wait(2)
+                if LP.Parent then
+                    enabled = true
+                    if toggle then
+                        toggle.Text = "ВЫКЛЮЧИТЬ"
+                        toggle.BackgroundColor3 = Color3.fromRGB(180, 40, 60)
+                    end
+                    if actionLabel then
+                        actionLabel.Text = "Поиск..."
+                        actionLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+                    end
+                end
+                continue
+            end
+            killTimestamp = 0
+        end
+
+        if waiting then continue end
+        local t = findNearest()
+        if t then
+            waiting = true
+            if actionLabel then
+                actionLabel.Text = "Найден: " .. t.name
+                actionLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+            end
+            task.wait(SPAWN_DELAY)
+            if not enabled then waiting = false continue end
+            if isAlive(t.obj) then
+                waiting = false
+                startTracking(t)
+            else
+                waiting = false
+                killTimestamp = os.clock()
+            end
+        end
+    end
+end)
